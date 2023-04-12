@@ -944,7 +944,7 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, MemoryConte
 		ExecStoreVirtualTuple(myslot);
 
 		/* Calculate the tuple's point in the N-dimensional hyperspace */
-		point = ts_hyperspace_calculate_point(ht->space, myslot);
+		point = ts_hyperspace_calculate_point(ht->space, myslot, NULL);
 
 		/* Find or create the insert state matching the point */
 		cis = ts_chunk_dispatch_get_chunk_insert_state(dispatch,

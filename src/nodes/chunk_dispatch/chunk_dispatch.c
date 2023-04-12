@@ -9,8 +9,10 @@
 #include <nodes/extensible.h>
 #include <nodes/makefuncs.h>
 #include <nodes/nodeFuncs.h>
+#include <optimizer/pathnode.h>
 #include <parser/parsetree.h>
 #include <utils/rel.h>
+#include <utils/syscache.h>
 #include <catalog/pg_type.h>
 
 #include "compat/compat.h"
@@ -20,6 +22,7 @@
 #include "subspace_store.h"
 #include "dimension.h"
 #include "guc.h"
+#include "nodes/hypertable_modify.h"
 #include "ts_catalog/chunk_data_node.h"
 
 static Node *chunk_dispatch_state_create(CustomScan *cscan);
@@ -234,7 +237,6 @@ chunk_dispatch_plan_create(PlannerInfo *root, RelOptInfo *relopt, CustomPath *be
 		cscan->scan.plan.plan_rows += subplan->plan_rows;
 		cscan->scan.plan.plan_width += subplan->plan_width;
 	}
-
 	cscan->custom_private = list_make1_oid(cdpath->hypertable_relid);
 	cscan->methods = &chunk_dispatch_plan_methods;
 	cscan->custom_plans = custom_plans;
@@ -243,7 +245,15 @@ chunk_dispatch_plan_create(PlannerInfo *root, RelOptInfo *relopt, CustomPath *be
 	/* The "input" and "output" target lists should be the same */
 	cscan->custom_scan_tlist = tlist;
 	cscan->scan.plan.targetlist = tlist;
-
+#if PG15_GE
+	if (root->parse->mergeUseOuterJoin)
+	{
+		/* replace expressions of ROWID_VAR */
+		tlist = ts_replace_rowid_vars(root, tlist, relopt->relid);
+		cscan->scan.plan.targetlist = tlist;
+		cscan->custom_scan_tlist = tlist;
+	}
+#endif
 	return &cscan->scan.plan;
 }
 
@@ -339,8 +349,76 @@ chunk_dispatch_exec(CustomScanState *node)
 	/* Switch to the executor's per-tuple memory context */
 	old = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 
+#if PG15_GE
+	Oid partition_col_idx = InvalidOid;
+	TupleTableSlot *newslot = NULL;
+	List *colnames_list = NULL;
+	if (dispatch->dispatch_state->mtstate->operation == CMD_MERGE)
+	{
+		HeapTuple tp;
+		AttrNumber natts;
+		AttrNumber attno;
+
+		tp = SearchSysCache1(RELOID, ObjectIdGetDatum(ht->main_table_relid));
+		if (!HeapTupleIsValid(tp))
+			elog(ERROR, "cache lookup failed for relation %u", ht->main_table_relid);
+		natts = ((Form_pg_class) GETSTRUCT(tp))->relnatts;
+		ReleaseSysCache(tp);
+		for (attno = 1; attno <= natts; attno++)
+		{
+			tp = SearchSysCache2(ATTNUM,
+								 ObjectIdGetDatum(ht->main_table_relid),
+								 Int16GetDatum(attno));
+			if (!HeapTupleIsValid(tp))
+				continue;
+			Form_pg_attribute att_tup = (Form_pg_attribute) GETSTRUCT(tp);
+			ReleaseSysCache(tp);
+			if (att_tup->attisdropped || att_tup->atthasmissing)
+			{
+				state->is_dropped_attr_exists = true;
+				continue;
+			}
+			colnames_list = lappend(colnames_list, pstrdup(NameStr(att_tup->attname)));
+		}
+
+		for (int i = 0; i < ht->space->num_dimensions; i++)
+		{
+			partition_col_idx = get_partition_attrno_from_tuple(ht->space, slot, colnames_list, i);
+			/* Row returned by child node does not have paritition col */
+			if (!OidIsValid(partition_col_idx))
+			{
+				List *actionStates =
+					dispatch->dispatch_state->mtstate->resultRelInfo->ri_notMatchedMergeAction;
+				ListCell *l;
+				foreach (l, actionStates)
+				{
+					MergeActionState *action = (MergeActionState *) lfirst(l);
+					CmdType commandType = action->mas_action->commandType;
+					if (commandType == CMD_INSERT)
+					{
+						/*
+						 * in case received tuple has only junk attributes, or
+						 * received tuple does not have dimension column, then
+						 * fetch full projection list
+						 */
+						action->mas_proj->pi_exprContext->ecxt_innertuple = slot;
+						newslot = ExecProject(action->mas_proj);
+						break;
+					}
+				}
+			}
+			if (newslot)
+				break;
+		}
+	}
 	/* Calculate the tuple's point in the N-dimensional hyperspace */
-	point = ts_hyperspace_calculate_point(ht->space, slot);
+	if (!OidIsValid(partition_col_idx) && newslot)
+		point = ts_hyperspace_calculate_point(ht->space, newslot, NULL);
+	else
+		point = ts_hyperspace_calculate_point(ht->space, slot, colnames_list);
+#else
+	point = ts_hyperspace_calculate_point(ht->space, slot, NULL);
+#endif
 
 	/* Save the main table's (hypertable's) ResultRelInfo */
 	if (!dispatch->hypertable_result_rel_info)
@@ -375,9 +453,8 @@ chunk_dispatch_exec(CustomScanState *node)
 	MemoryContextSwitchTo(old);
 
 	/* Convert the tuple to the chunk's rowtype, if necessary */
-	if (cis->hyper_to_chunk_map != NULL)
+	if (cis->hyper_to_chunk_map != NULL && state->is_dropped_attr_exists == false)
 		slot = execute_attr_map_slot(cis->hyper_to_chunk_map->attrMap, slot, cis->slot);
-
 	return slot;
 }
 

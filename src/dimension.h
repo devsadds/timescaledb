@@ -108,7 +108,8 @@ typedef struct DimensionInfo
 extern Hyperspace *ts_dimension_scan(int32 hypertable_id, Oid main_table_relid, int16 num_dimension,
 									 MemoryContext mctx);
 extern DimensionSlice *ts_dimension_calculate_default_slice(const Dimension *dim, int64 value);
-extern TSDLLEXPORT Point *ts_hyperspace_calculate_point(const Hyperspace *h, TupleTableSlot *slot);
+extern TSDLLEXPORT Point *ts_hyperspace_calculate_point(const Hyperspace *h, TupleTableSlot *slot,
+														List *colnames_list);
 extern int ts_dimension_get_slice_ordinal(const Dimension *dim, const DimensionSlice *slice);
 extern const Dimension *ts_hyperspace_get_dimension_by_id(const Hyperspace *hs, int32 id);
 extern TSDLLEXPORT const Dimension *ts_hyperspace_get_dimension(const Hyperspace *hs,
@@ -155,4 +156,7 @@ extern TSDLLEXPORT bool ts_is_equality_operator(Oid opno, Oid left, Oid right);
 #define hyperspace_get_closed_dimension(space, i)                                                  \
 	ts_hyperspace_get_dimension(space, DIMENSION_TYPE_CLOSED, i)
 
+extern int get_partition_attrno(Dimension *d, TupleTableSlot *slot, List *colnames_list);
+extern int get_partition_attrno_from_tuple(const Hyperspace *h, TupleTableSlot *slot,
+										   List *colnames_list, int current_dimension);
 #endif /* TIMESCALEDB_DIMENSION_H */

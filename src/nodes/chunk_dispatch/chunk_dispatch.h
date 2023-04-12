@@ -72,6 +72,8 @@ typedef struct ChunkDispatchState
 	 */
 	ChunkDispatch *dispatch;
 	ResultRelInfo *rri;
+	/* flag to represent dropped attributes */
+	bool is_dropped_attr_exists;
 } ChunkDispatchState;
 
 extern TSDLLEXPORT bool ts_is_chunk_dispatch_state(PlanState *state);
@@ -89,5 +91,4 @@ ts_chunk_dispatch_get_chunk_insert_state(ChunkDispatch *dispatch, Point *p, Tupl
 
 extern TSDLLEXPORT Path *ts_chunk_dispatch_path_create(PlannerInfo *root, ModifyTablePath *mtpath,
 													   Index hypertable_rti, int subpath_index);
-
 #endif /* TIMESCALEDB_NODES_CHUNK_DISPATCH_H */

@@ -957,8 +957,81 @@ ts_point_create(int16 num_dimensions)
 	return p;
 }
 
+int
+get_partition_attrno(Dimension *d, TupleTableSlot *slot, List *colnames_list)
+{
+	AttrNumber partition_col_idx = 0;
+	bool partition_col_found = false;
+	if (colnames_list)
+	{
+		ListCell *col_list;
+		foreach (col_list, colnames_list)
+		{
+			const char *col_name = lfirst(col_list);
+			if (namestrcmp(&d->fd.column_name, col_name) == 0)
+			{
+				partition_col_found = true;
+				break;
+			}
+			partition_col_idx++;
+		}
+	}
+	if (partition_col_found)
+	{
+		TupleDesc tupdesc = slot->tts_tupleDescriptor;
+		if (tupdesc->attrs[partition_col_idx].atttypid == d->fd.column_type)
+			return partition_col_idx + 1;
+	}
+	return 0;
+}
+
+/*
+ * Helper function to find the right partition value from a tuple,
+ * in case attributes in tuple are not ordered correctly.
+ *
+ * Assume columns in table are in below order:
+ *  [time, temperature, location, value]
+ * "time" is the partition column based on this columns value
+ * ChunkDispatch node decides if to create or reuse an existing
+ * chunk.
+ *
+ * Assume received tuple for child node of ChunkDispatch node is like
+ * 	[temperature, location, time, value]
+ *
+ * In this case this function will return correct attribute no: from
+ * the input slot.
+ */
+int
+get_partition_attrno_from_tuple(const Hyperspace *hs, TupleTableSlot *slot, List *colnames_list,
+								int current_dimension)
+{
+	AttrNumber partition_col_idx = 0;
+	Dimension *d;
+	d = (Dimension *) &hs->dimensions[current_dimension];
+
+	if (colnames_list)
+		partition_col_idx = get_partition_attrno(d, slot, colnames_list);
+
+	if (OidIsValid(partition_col_idx))
+		return partition_col_idx;
+
+	Oid partition_col_type = d->fd.column_type;
+	TupleDesc tupdesc = slot->tts_tupleDescriptor;
+	int natts = tupdesc->natts;
+	for (int i = 0; i < natts; i++)
+	{
+		Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+		if (attr->atttypid == partition_col_type)
+		{
+			partition_col_idx = i + 1;
+			break;
+		}
+	}
+	return partition_col_idx;
+}
+
 TSDLLEXPORT Point *
-ts_hyperspace_calculate_point(const Hyperspace *hs, TupleTableSlot *slot)
+ts_hyperspace_calculate_point(const Hyperspace *hs, TupleTableSlot *slot, List *colnames_list)
 {
 	Point *p = ts_point_create(hs->num_dimensions);
 	int i;
@@ -970,10 +1043,15 @@ ts_hyperspace_calculate_point(const Hyperspace *hs, TupleTableSlot *slot)
 		bool isnull;
 		Oid dimtype;
 
+		AttrNumber partition_col_idx = d->column_attno;
+		if (colnames_list)
+			partition_col_idx = get_partition_attrno_from_tuple(hs, slot, colnames_list, i);
+
 		if (NULL != d->partitioning)
-			datum = ts_partitioning_func_apply_slot(d->partitioning, slot, &isnull);
+			datum =
+				ts_partitioning_func_apply_slot(d->partitioning, slot, &isnull, partition_col_idx);
 		else
-			datum = slot_getattr(slot, d->column_attno, &isnull);
+			datum = slot_getattr(slot, partition_col_idx, &isnull);
 
 		switch (d->type)
 		{

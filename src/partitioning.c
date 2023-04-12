@@ -260,14 +260,22 @@ ts_partitioning_func_apply(PartitioningInfo *pinfo, Oid collation, Datum value)
 	return result;
 }
 
+/*
+ * Helper function to find the right partition value from a tuple,
+ * for space partitioned hypertables. Since attributes in tuple can
+ * be of different ordere when compared to physical table columns order,
+ * we pass partition_col_idx which points to correct space parititioned
+ * column in the given tuple.
+ */
 TSDLLEXPORT Datum
-ts_partitioning_func_apply_slot(PartitioningInfo *pinfo, TupleTableSlot *slot, bool *isnull)
+ts_partitioning_func_apply_slot(PartitioningInfo *pinfo, TupleTableSlot *slot, bool *isnull,
+								AttrNumber partition_col_idx)
 {
 	Datum value;
 	bool null;
 	Oid collation;
 
-	value = slot_getattr(slot, pinfo->column_attnum, &null);
+	value = slot_getattr(slot, partition_col_idx, &null);
 
 	if (NULL != isnull)
 		*isnull = null;
