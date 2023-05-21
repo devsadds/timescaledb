@@ -2032,7 +2032,7 @@ WHEN MATCHED
    THEN DO NOTHING
 WHEN NOT MATCHED
    THEN DO NOTHING;
-ERROR:  The MERGE command does not support hypertables in this version
+ERROR:  cannot execute MERGE on relation "_dist_hyper_1_1_chunk"
 \set ON_ERROR_STOP 1
 -------
 -- Tests without enable_per_data_node_queries (no pushdown supported)
